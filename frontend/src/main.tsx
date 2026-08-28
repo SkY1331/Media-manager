@@ -410,10 +410,13 @@ function App({onLogout,authRequired}:{onLogout:()=>void;authRequired:boolean}){
       <button className="ghost tile-hide" onClick={e=>{e.stopPropagation();ignoreDisc(x.tmdb_id)}}>Masquer</button>
     </div>;
   }
-  function board(area:string, title:string, count:number, extra:React.ReactNode, body:React.ReactNode){
+  function board(area:string, title:string, count:number, extra:React.ReactNode, body:React.ReactNode, subtitle?:string){
     return <section className={`board ${area}`}>
       <div className="board-head">
-        <h2>{title} <span className="count">{count}</span></h2>
+        <div className="board-title">
+          <h2>{title} <span className="count">{count}</span></h2>
+          {subtitle?<p className="board-sub">{subtitle}</p>:null}
+        </div>
         {extra}
       </div>
       {body}
@@ -421,6 +424,31 @@ function App({onLogout,authRequired}:{onLogout:()=>void;authRequired:boolean}){
   }
   function rail(items:any[], empty:string, children:React.ReactNode){
     return items.length===0?<p className="empty-state">{empty}</p>:<div className="h-scroll">{children}</div>;
+  }
+  function resultCard(x:any, i:number){
+    const st=x.owned?{kind:"ok",label:"En stock"}
+      :dlTmdbIds.has(x.tmdb_id)?{kind:"downloading",label:"En cours"}
+      :wishTmdbIds.has(x.tmdb_id)?{kind:"waiting",label:"Envie"}
+      :null;
+    const label=[x.title,x.year].filter(Boolean).join(" · ");
+    return <button
+      className={`result-card ${x.tmdb_id?"":"disabled"}`}
+      key={x.tmdb_id||`${x.title}-${x.year}-${i}`}
+      onClick={()=>open(x)}
+      disabled={!x.tmdb_id}
+      title={x.tmdb_id?label:`${label} — pas de fiche TMDB`}
+      aria-label={x.tmdb_id?label:`${label || "Résultat"}, pas de fiche TMDB`}
+    >
+      <span className="result-poster">
+        <Poster path={x.poster_path} w={342} className="poster tile-poster"/>
+        {!x.poster_path&&<span className="result-fallback" aria-hidden>{(x.title||"?")[0]}</span>}
+        {st&&<span className={`badge ${st.kind} result-badge`}>{st.label}</span>}
+      </span>
+      <span className="result-meta">
+        <b>{x.title||"Sans titre"}</b>
+        <small>{x.year||"—"}</small>
+      </span>
+    </button>;
   }
   const wishTmdbIds=new Set(wishlist.map((w:any)=>w.tmdb_id).filter(Boolean));
   const dlTmdbIds=new Set(downloads.map((d:any)=>d.tmdb_id).filter(Boolean));
@@ -432,6 +460,17 @@ function App({onLogout,authRequired}:{onLogout:()=>void;authRequired:boolean}){
 
   const showResults=searched;
   function closeMovie(){setMovie(null);setDlState(null);setReleases([]);setC411Tried(false);setC411Msg("");setC411Err(false)}
+  function clearSearch(){setSearched(false);setResults([]);setSearchMsg("");setSearchSources(null)}
+  useEffect(()=>{
+    function onKey(e:KeyboardEvent){
+      if(e.key!=="Escape")return;
+      if(movie){closeMovie();return}
+      if(showSettings){setShowSettings(false);return}
+      if(searched) clearSearch();
+    }
+    window.addEventListener("keydown",onKey);
+    return()=>window.removeEventListener("keydown",onKey);
+  },[movie,showSettings,searched]);
 
   return <div className="app">
     <header className="topbar">
@@ -457,10 +496,10 @@ function App({onLogout,authRequired}:{onLogout:()=>void;authRequired:boolean}){
       <div className="workspace">
         <div className="col-main">
           {showResults&&board("board-results","Résultats",results.length,
-            <button className="ghost" onClick={()=>{setSearched(false);setResults([]);setSearchMsg("");setSearchSources(null)}}>Retour</button>,
-            rail(results,searchMsg||"Aucun résultat pour cette recherche.",results.map((x,i)=><button className={`card tile ${x.tmdb_id?"":"disabled"}`} key={x.tmdb_id||`${x.title}-${x.year}-${i}`} onClick={()=>open(x)} disabled={!x.tmdb_id} title={x.title}>
-              <Poster path={x.poster_path} w={342} className="poster tile-poster"/>
-            </button>))
+            <button className="ghost" onClick={clearSearch}>Retour</button>,
+            results.length===0?<p className="empty-state">{busy?"Recherche en cours…":(searchMsg||"Aucun résultat pour cette recherche.")}</p>:
+            <div className="results-grid">{results.map(resultCard)}</div>,
+            q.trim()?`pour « ${q.trim()} »`:undefined
           )}
           {!showResults&&board("board-nouv","Nouveautés",discNouveautes.length,
             <button className="ghost" onClick={loadDiscovery} disabled={discoveryBusy}>{discoveryBusy?"Chargement…":"Actualiser"}</button>,
