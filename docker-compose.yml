@@ -1,0 +1,25 @@
+services:
+  backend:
+    build: ./backend
+    container_name: media-manager-backend
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/data
+      - ${LIBRARY_HOST_PATH:?Définissez LIBRARY_HOST_PATH dans .env}:/media/movies:ro
+    ports:
+      - "127.0.0.1:8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  frontend:
+    build: ./frontend
+    container_name: media-manager-frontend
+    restart: unless-stopped
+    environment:
+      VITE_API_BASE: /api
+      API_PROXY_TARGET: http://backend:8000
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend

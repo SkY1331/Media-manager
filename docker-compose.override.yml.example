@@ -1,0 +1,28 @@
+# Copier vers docker-compose.override.yml pour activer le hot-reload en local.
+# docker compose fusionne ce fichier automatiquement avec docker-compose.yml
+# (docker-compose.override.yml est ignoré par git).
+services:
+  backend:
+    volumes:
+      - ./backend/app:/app/app
+      - ./data:/data
+      - ${LIBRARY_HOST_PATH:?Définissez LIBRARY_HOST_PATH dans .env}:/media/movies:ro
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+      - --reload
+
+  frontend:
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/index.html:/app/index.html
+      - ./frontend/vite.config.ts:/app/vite.config.ts
+    environment:
+      CHOKIDAR_USEPOLLING: "true"
+      WATCHPACK_POLLING: "true"
+      VITE_API_BASE: /api
+      API_PROXY_TARGET: http://backend:8000
