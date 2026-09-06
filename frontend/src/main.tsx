@@ -62,6 +62,8 @@ type GrabDownloadSettings={
   c411_categories:string;
   c411_request_delay_seconds:number;
   transmission_download_dir:string;
+  plex_url:string;
+  plex_token:string;
 };
 
 type DiscoverySettings={
@@ -80,6 +82,38 @@ type DiscoverySettings={
 };
 
 const WISH_STATUS:{[k:string]:string}={WAITING:"En attente",PAUSED:"En pause",FOUND:"Trouvé",DOWNLOADING:"Téléchargement"};
+const DISC_CACHE_KEY="discovery-lists-v1";
+
+function readDiscCache(){
+  try{
+    const d=JSON.parse(localStorage.getItem(DISC_CACHE_KEY)||"null");
+    if(!d||!Array.isArray(d.nouveautes)||!Array.isArray(d.attendus)) return null;
+    return {
+      nouveautes:d.nouveautes,
+      attendus:d.attendus,
+      classiques:Array.isArray(d.classiques)?d.classiques:[],
+      savedAt:typeof d.savedAt==="number"?d.savedAt:null,
+    };
+  }catch{return null}
+}
+function writeDiscCache(data:{nouveautes:any[];attendus:any[];classiques:any[]}, savedAt=Date.now()){
+  try{
+    localStorage.setItem(DISC_CACHE_KEY, JSON.stringify({
+      nouveautes:data.nouveautes||[],
+      attendus:data.attendus||[],
+      classiques:data.classiques||[],
+      savedAt,
+    }));
+  }catch{}
+}
+function fmtWhen(ts?:number|null){
+  if(!ts) return "";
+  return new Date(ts).toLocaleString("fr-FR",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"});
+}
+function plexFallback(title?:string, year?:number){
+  const q=[title,year].filter(Boolean).join(" ");
+  return q?`https://app.plex.tv/desktop/#!/search?query=${encodeURIComponent(String(q))}`:"";
+}
 
 function Login({onOk}:{onOk:()=>void}){
   const[username,setUsername]=useState("");
@@ -140,9 +174,15 @@ function App({onLogout,authRequired}:{onLogout:()=>void;authRequired:boolean}){
     quality_min_seeders:2,
     c411_categories:"2000,2010,2030,2050,2060,2070,2080,2090,5000,5060,5070,5080",
     c411_request_delay_seconds:4.2,
-    transmission_download_dir:""
+    transmission_download_dir:"",
+    plex_url:"",
+    plex_token:""
   });
-  const[discovery,setDiscovery]=useState<{nouveautes:any[];attendus:any[];classiques:any[]}>({nouveautes:[],attendus:[],classiques:[]});
+  const[discovery,setDiscovery]=useState<{nouveautes:any[];attendus:any[];classiques:any[]}>(()=>{
+    const c=readDiscCache();
+    return c?{nouveautes:c.nouveautes,attendus:c.attendus,classiques:c.classiques}:{nouveautes:[],attendus:[],classiques:[]};
+  });
+  const[discSavedAt,setDiscSavedAt]=useState<number|null>(()=>readDiscCache()?.savedAt||null);
   const[discoveryBusy,setDiscoveryBusy]=useState(false);
   const[discoveryMsg,setDiscoveryMsg]=useState("");
   const[discSettings,setDiscSettings]=useState<DiscoverySettings>({
@@ -152,6 +192,7 @@ function App({onLogout,authRequired}:{onLogout:()=>void;authRequired:boolean}){
   });
   const[savingDisc,setSavingDisc]=useState(false);
   const[discSettingsMsg,setDiscSettingsMsg]=useState("");
+  const[isMobile,setIsMobile]=useState(()=>typeof window!=="undefined"&&window.matchMedia("(max-width: 860px)").matches);
 
   async function home(){
     const[w,d]=await Promise.all([
@@ -165,16 +206,25 @@ function App({onLogout,authRequired}:{onLogout:()=>void;authRequired:boolean}){
   async function loadSettings(){
     const r=await apiFetch(`/settings/grab-download`);
     if(!r.ok)return;
-    setSettings(await r.json());
+    const d=await r.json();
+    setSettings(s=>({...s,...d,plex_url:d.plex_url??"",plex_token:d.plex_token??""}));
   }
-  async function loadDiscovery(){
+  function applyDiscovery(d:any){
+    const next={nouveautes:d.nouveautes||[],attendus:d.attendus||[],classiques:d.classiques||[]};
+    const savedAt=Date.now();
+    setDiscovery(next);
+    setDiscSavedAt(savedAt);
+    writeDiscCache(next, savedAt);
+    if(d.settings)setDiscSettings(d.settings);
+  }
+  async function loadDiscovery(force=false){
+    if(!force && readDiscCache()) return;
     setDiscoveryBusy(true);setDiscoveryMsg("");
     try{
       const r=await apiFetch(`/discovery`);
       const d=await r.json().catch(()=>({}));
       if(!r.ok)throw new Error(typeof d.detail==="string"?d.detail:"Impossible de charger les nouveautés");
-      setDiscovery({nouveautes:d.nouveautes||[],attendus:d.attendus||[],classiques:d.classiques||[]});
-      if(d.settings)setDiscSettings(d.settings);
+      applyDiscovery(d);
     }catch(e:any){
       setDiscoveryMsg(e?.message||"Erreur lors du chargement des nouveautés");
     }finally{setDiscoveryBusy(false)}
@@ -184,7 +234,13 @@ function App({onLogout,authRequired}:{onLogout:()=>void;authRequired:boolean}){
     if(!r.ok)return;
     setDiscSettings(await r.json());
   }
-  useEffect(()=>{home();loadSettings();loadDiscSettings();loadDiscovery();const t=setInterval(home,5000);return()=>clearInterval(t)},[]);
+  useEffect(()=>{home();loadSettings();loadDiscSettings();loadDiscovery(false);const t=setInterval(home,5000);return()=>clearInterval(t)},[]);
+  useEffect(()=>{
+    const mq=window.matchMedia("(max-width: 860px)");
+    const on=()=>setIsMobile(mq.matches);
+    mq.addEventListener("change",on);
+    return()=>mq.removeEventListener("change",on);
+  },[]);
   useEffect(()=>{
     function onWheel(e:WheelEvent){
       const scroller=(e.target as HTMLElement|null)?.closest?.(".h-scroll") as HTMLElement|null;
@@ -257,7 +313,7 @@ function App({onLogout,authRequired}:{onLogout:()=>void;authRequired:boolean}){
       c411Fallback([], e?.message||"Erreur lors de la recherche C411", true);
     }finally{setBusy(false);setBusyMsg("");setSearchingWishId(null)}
   }
-  async function wish(auto=false){await apiFetch(`/movies/${movie.tmdb_id}/wishlist?auto_download=${auto}`,{method:"POST"});await home();setMovie(await apiFetch(`/movies/${movie.tmdb_id}`).then(r=>r.json()));loadDiscovery()}
+  async function wish(auto=false){await apiFetch(`/movies/${movie.tmdb_id}/wishlist?auto_download=${auto}`,{method:"POST"});await home();setMovie(await apiFetch(`/movies/${movie.tmdb_id}`).then(r=>r.json()))}
   function startEditWish(w:any){
     setEditingWishId(w.id);setEditAuto(!!w.auto_download);setEditStatus(w.status||"WAITING");setWishMsg("");
   }
@@ -275,7 +331,7 @@ function App({onLogout,authRequired}:{onLogout:()=>void;authRequired:boolean}){
       });
       const d=await r.json().catch(()=>({}));
       if(!r.ok)throw new Error(typeof d.detail==="string"?d.detail:"Impossible de modifier l'envie");
-      setEditingWishId(null);await home();await refreshMovie();loadDiscovery();
+      setEditingWishId(null);await home();await refreshMovie();
     }catch(e:any){setWishMsg(e?.message||"Erreur lors de la modification")}
     finally{setSavingWish(false)}
   }
@@ -286,7 +342,7 @@ function App({onLogout,authRequired}:{onLogout:()=>void;authRequired:boolean}){
       const r=await apiFetch(`/wishlist/${id}`,{method:"DELETE"});
       const d=await r.json().catch(()=>({}));
       if(!r.ok)throw new Error(d.detail||"Impossible de retirer l'envie");
-      setEditingWishId(null);await home();await refreshMovie();loadDiscovery();
+      setEditingWishId(null);await home();await refreshMovie();
     }catch(e:any){setWishMsg(e?.message||"Erreur lors de la suppression")}
     finally{setSavingWish(false)}
   }
@@ -300,7 +356,6 @@ function App({onLogout,authRequired}:{onLogout:()=>void;authRequired:boolean}){
       setDlState({id,status:"ok"});
       await home();
       await refreshMovie();
-      loadDiscovery();
     }catch(e:any){
       setDlState({id,status:"error",msg:e?.message||"Impossible d'ajouter à Transmission"});
     }
@@ -365,7 +420,7 @@ function App({onLogout,authRequired}:{onLogout:()=>void;authRequired:boolean}){
         const added=d.applied?.added||0;
         setDiscSettingsMsg(added?`Paramètres enregistrés. ${added} film(s) ajouté(s) aux envies.`:"Paramètres enregistrés.");
       }
-      await loadDiscovery();
+      await loadDiscovery(true);
       await home();
     }catch(e:any){
       setDiscSettingsMsg(e?.message||"Erreur lors de l'enregistrement");
@@ -378,11 +433,15 @@ function App({onLogout,authRequired}:{onLogout:()=>void;authRequired:boolean}){
       alert(typeof d.detail==="string"?d.detail:"Impossible de masquer ce film");
       return;
     }
-    setDiscovery(prev=>({
-      nouveautes:prev.nouveautes.filter((x:any)=>x.tmdb_id!==tmdbId),
-      attendus:prev.attendus.filter((x:any)=>x.tmdb_id!==tmdbId),
-      classiques:(prev.classiques||[]).filter((x:any)=>x.tmdb_id!==tmdbId),
-    }));
+    setDiscovery(prev=>{
+      const next={
+        nouveautes:prev.nouveautes.filter((x:any)=>x.tmdb_id!==tmdbId),
+        attendus:prev.attendus.filter((x:any)=>x.tmdb_id!==tmdbId),
+        classiques:(prev.classiques||[]).filter((x:any)=>x.tmdb_id!==tmdbId),
+      };
+      writeDiscCache(next, discSavedAt||Date.now());
+      return next;
+    });
   }
 
   function wishForm(id:number){
@@ -471,6 +530,12 @@ function App({onLogout,authRequired}:{onLogout:()=>void;authRequired:boolean}){
     window.addEventListener("keydown",onKey);
     return()=>window.removeEventListener("keydown",onKey);
   },[movie,showSettings,searched]);
+  useEffect(()=>{
+    if(!movie&&!showSettings&&!(searched&&isMobile))return;
+    const prev=document.body.style.overflow;
+    document.body.style.overflow="hidden";
+    return()=>{document.body.style.overflow=prev};
+  },[movie,showSettings,searched,isMobile]);
 
   return <div className="app">
     <header className="topbar">
@@ -487,7 +552,7 @@ function App({onLogout,authRequired}:{onLogout:()=>void;authRequired:boolean}){
         {authRequired&&<button className="ghost" onClick={async()=>{await apiFetch(`/auth/logout`,{method:"POST"});onLogout()}}>Déconnexion</button>}
       </div>
     </header>
-    {(busy||(!busy&&searched&&(searchMsg||searchSources)))&&<div className={`status-bar ${!busy&&searched&&!results.length?"warn":""}`}>
+    {(busy||(!busy&&searched&&(searchMsg||searchSources)))&&<div className={`status-bar ${!busy&&searched&&!results.length?"warn":""} ${searched&&isMobile?"mobile-hidden":""}`}>
       {busy&&<><span className="spinner" aria-hidden="true"/><span>{busyMsg||"Recherche…"}</span></>}
       {!busy&&searched&&searchMsg&&<span>{searchMsg}</span>}
       {!busy&&searched&&searchSources&&results.length>0&&<span className="muted">Sources : TMDB {searchSources.tmdb||0} · Local {searchSources.local||0} · C411 {searchSources.c411||0}</span>}
@@ -495,23 +560,24 @@ function App({onLogout,authRequired}:{onLogout:()=>void;authRequired:boolean}){
     <div className="page">
       <div className="workspace">
         <div className="col-main">
-          {showResults&&board("board-results","Résultats",results.length,
+          {showResults&&!isMobile&&board("board-results","Résultats",results.length,
             <button className="ghost" onClick={clearSearch}>Retour</button>,
             results.length===0?<p className="empty-state">{busy?"Recherche en cours…":(searchMsg||"Aucun résultat pour cette recherche.")}</p>:
             <div className="results-grid">{results.map(resultCard)}</div>,
             q.trim()?`pour « ${q.trim()} »`:undefined
           )}
-          {!showResults&&board("board-nouv","Nouveautés",discNouveautes.length,
-            <button className="ghost" onClick={loadDiscovery} disabled={discoveryBusy}>{discoveryBusy?"Chargement…":"Actualiser"}</button>,
+          {(!showResults||isMobile)&&board("board-nouv","Nouveautés",discNouveautes.length,
+            <button className="ghost" onClick={()=>loadDiscovery(true)} disabled={discoveryBusy}>{discoveryBusy?"Chargement…":"Actualiser"}</button>,
             <>
               {discoveryMsg&&<p className="empty-msg">{discoveryMsg}</p>}
               {rail(discNouveautes,discoveryBusy?"Chargement TMDB…":"Aucun film récent bien noté hors stock, envies et téléchargements.",discNouveautes.map(discCard))}
-            </>
+            </>,
+            discSavedAt?`En mémoire · ${fmtWhen(discSavedAt)}`:undefined
           )}
-          {!showResults&&board("board-attend","Attendus",discAttendus.length,null,
+          {(!showResults||isMobile)&&board("board-attend","Attendus",discAttendus.length,null,
             rail(discAttendus,discoveryBusy?"Chargement…":"Aucune sortie à venir dans la fenêtre choisie.",discAttendus.map(discCard))
           )}
-          {!showResults&&board("board-class","Classiques",discClassiques.length,null,
+          {(!showResults||isMobile)&&board("board-class","Classiques",discClassiques.length,null,
             rail(discClassiques,discoveryBusy?"Chargement…":"Aucun classique ultra bien noté hors stock, envies et téléchargements.",discClassiques.map(discCard))
           )}
         </div>
@@ -553,6 +619,24 @@ function App({onLogout,authRequired}:{onLogout:()=>void;authRequired:boolean}){
         </div>
       </div>
 
+      {showResults&&isMobile&&<div className="scrim search-scrim" onClick={clearSearch}>
+        <section className="panel sheet search-sheet" onClick={e=>e.stopPropagation()}>
+          <div className="sheet-handle" aria-hidden="true"/>
+          <div className="sheet-head">
+            <div className="board-title">
+              <h2>Résultats <span className="count">{results.length}</span></h2>
+              {q.trim()?<p className="board-sub">pour « {q.trim()} »</p>:null}
+            </div>
+            <button className="ghost" onClick={clearSearch}>Fermer</button>
+          </div>
+          {busy&&<p className="busy search-sheet-msg"><span className="spinner" aria-hidden="true"/><span>{busyMsg||"Recherche…"}</span></p>}
+          {!busy&&searchSources&&results.length>0&&<p className="muted search-sheet-msg">TMDB {searchSources.tmdb||0} · Local {searchSources.local||0} · C411 {searchSources.c411||0}</p>}
+          {results.length===0
+            ?<p className="empty-state">{busy?"Recherche en cours…":(searchMsg||"Aucun résultat pour cette recherche.")}</p>
+            :<div className="results-rail h-scroll">{results.map(resultCard)}</div>}
+        </section>
+      </div>}
+
       {showSettings&&<div className="scrim settings-scrim" onClick={()=>setShowSettings(false)}>
         <section className="panel sheet" onClick={e=>e.stopPropagation()}>
           <div className="sheet-head"><h2>Paramètres de téléchargement</h2><button className="ghost" onClick={()=>setShowSettings(false)}>Fermer</button></div>
@@ -566,6 +650,8 @@ function App({onLogout,authRequired}:{onLogout:()=>void;authRequired:boolean}){
             <label>Catégories C411 (csv)<input value={settings.c411_categories} onChange={e=>setSettings({...settings,c411_categories:e.target.value})}/></label>
             <label>Délai C411 (secondes)<input type="number" step="0.1" min="0" value={settings.c411_request_delay_seconds} onChange={e=>setSettings({...settings,c411_request_delay_seconds:Number(e.target.value)})}/></label>
             <label className="full">Dossier de téléchargement Transmission<input value={settings.transmission_download_dir} onChange={e=>setSettings({...settings,transmission_download_dir:e.target.value})}/></label>
+            <label className="full">URL Plex<input value={settings.plex_url||""} onChange={e=>setSettings({...settings,plex_url:e.target.value})} placeholder="http://192.168.1.10:32400"/></label>
+            <label className="full">Jeton Plex<input type="password" value={settings.plex_token||""} onChange={e=>setSettings({...settings,plex_token:e.target.value})} placeholder="X-Plex-Token" autoComplete="off"/></label>
           </div>
           <div className="actions"><button onClick={saveSettings} disabled={savingSettings}>{savingSettings?"Enregistrement...":"Enregistrer"}</button>{settingsMsg&&<p className="muted">{settingsMsg}</p>}</div>
           <h2>Nouveautés, attendus et classiques</h2>
@@ -588,63 +674,82 @@ function App({onLogout,authRequired}:{onLogout:()=>void;authRequired:boolean}){
         </section>
       </div>}
 
-      {movie&&<div className="scrim" onClick={closeMovie}>
+      {movie&&<div className="scrim movie-scrim" onClick={closeMovie}>
         <section className="panel sheet movie-sheet" id="movie-panel" onClick={e=>e.stopPropagation()}>
-          <div className="row detail">
-            <Poster path={movie.poster_path} w={342} className="poster lg"/>
-            <div className="grow">
-              <div className="row"><div>
-                <h2>{movie.title}</h2>
-                <p className="muted">{[movie.year,movie.release_date&&fmtDate(movie.release_date)].filter(Boolean).join(" · ")}</p>
-              </div><button className="ghost" onClick={closeMovie}>Fermer</button></div>
-              <p className="status-line">
-                {movie.vote_average?<span className="badge auto">★ {movie.vote_average}{movie.vote_count?` · ${movie.vote_count} votes`:""}</span>:null}
-                {movie.popularity?<span className="badge missing">Popularité {Math.round(Number(movie.popularity))}</span>:null}
-                {movie.owned?<span className="badge ok">Présent dans la bibliothèque</span>
-                :movie.wishlist?<><span className={`badge ${statusKind(movie.wishlist.status)}`}>{WISH_STATUS[movie.wishlist.status]||movie.wishlist.status}</span>{movie.wishlist.auto_download&&<span className="badge auto">Auto</span>}</>
-                :<span className="badge missing">Absent</span>}
-              </p>
-              {movie.overview?<p className="muted movie-overview">{movie.overview}</p>:null}
-              {movie.owned?<div>{movie.local_files.map((f:any)=><div className="subcard" key={f.path}>{f.filename}<small>{size(f.size_bytes)} · {f.resolution} · {f.codec} · {f.language}</small></div>)}</div>:
-              movie.wishlist?<div>
-                <div className="actions">
-                  <button onClick={()=>c411()} disabled={busy}>Chercher sur C411</button>
-                  {editingWishId!==movie.wishlist.id&&<button className="ghost" onClick={()=>startEditWish(movie.wishlist)}>Modifier l'envie</button>}
-                  <button className="ghost danger" onClick={()=>removeWish(movie.wishlist.id)} disabled={savingWish}>Retirer</button>
+          <div className="sheet-handle" aria-hidden="true"/>
+          <div className="movie-head">
+            <div className="movie-head-row">
+              <Poster path={movie.poster_path} w={342} className="poster lg"/>
+              <div className="grow">
+                <div className="row movie-title-row">
+                  <div>
+                    <h2>{movie.title}</h2>
+                    <p className="muted">{[movie.year,movie.release_date&&fmtDate(movie.release_date)].filter(Boolean).join(" · ")}</p>
+                  </div>
+                  <button className="ghost" onClick={closeMovie}>Fermer</button>
                 </div>
-                {editingWishId===movie.wishlist.id&&wishForm(movie.wishlist.id)}
-              </div>:
+                <p className="status-line">
+                  {movie.vote_average?<span className="badge auto">★ {movie.vote_average}{movie.vote_count?` · ${movie.vote_count} votes`:""}</span>:null}
+                  {movie.popularity?<span className="badge missing">Popularité {Math.round(Number(movie.popularity))}</span>:null}
+                  {movie.owned?<span className="badge ok">Présent dans la bibliothèque</span>
+                  :movie.wishlist?<><span className={`badge ${statusKind(movie.wishlist.status)}`}>{WISH_STATUS[movie.wishlist.status]||movie.wishlist.status}</span>{movie.wishlist.auto_download&&<span className="badge auto">Auto</span>}</>
+                  :<span className="badge missing">Absent</span>}
+                </p>
+              </div>
+            </div>
+            {movie.overview?<p className="muted movie-overview">{movie.overview}</p>:null}
+            {movie.owned?<div className="actions">
+              {(movie.plex_url||plexFallback(movie.title,movie.year))&&<a className="plex-link" href={movie.plex_url||plexFallback(movie.title,movie.year)} target="_blank" rel="noopener noreferrer">Ouvrir dans Plex</a>}
+            </div>:
+            movie.wishlist?<div>
               <div className="actions">
                 <button onClick={()=>c411()} disabled={busy}>Chercher sur C411</button>
-                <button className="ghost" onClick={()=>wish(false)}>Ajouter aux envies</button>
-                <button className="ghost" onClick={()=>wish(true)}>Téléchargement auto</button>
-                <button className="ghost" onClick={()=>{ignoreDisc(movie.tmdb_id);closeMovie()}}>Masquer</button>
-              </div>}
-              {c411Tried&&!busy&&releases.length===0&&<div className={`c411-fallback ${c411Err?"warn":""}`}>
-                <p>{c411Msg||"Aucune release trouvée sur C411 pour ce film."}</p>
-                {!c411Err&&!movie.owned&&(movie.wishlist
-                  ?<p className="muted">La recherche automatique réessaiera plus tard.</p>
-                  :<p className="muted">Ajoutez-le aux envies pour relancer la recherche plus tard.</p>)}
-              </div>}
-              {releases.map(r=>{
+                {editingWishId!==movie.wishlist.id&&<button className="ghost" onClick={()=>startEditWish(movie.wishlist)}>Modifier l'envie</button>}
+                <button className="ghost danger" onClick={()=>removeWish(movie.wishlist.id)} disabled={savingWish}>Retirer</button>
+              </div>
+              {editingWishId===movie.wishlist.id&&wishForm(movie.wishlist.id)}
+            </div>:
+            <div className="actions">
+              <button onClick={()=>c411()} disabled={busy}>Chercher sur C411</button>
+              <button className="ghost" onClick={()=>wish(false)}>Ajouter aux envies</button>
+              <button className="ghost" onClick={()=>wish(true)}>Téléchargement auto</button>
+              <button className="ghost" onClick={()=>{ignoreDisc(movie.tmdb_id);closeMovie()}}>Masquer</button>
+            </div>}
+          </div>
+          <div className="movie-body">
+            {busy&&<p className="busy"><span className="spinner" aria-hidden="true"/><span>{busyMsg||"Recherche C411…"}</span></p>}
+            {movie.owned&&<div className="file-list">{(movie.local_files||[]).map((f:any)=><div className="subcard" key={f.path}>{f.filename}<small>{size(f.size_bytes)} · {f.resolution} · {f.codec} · {f.language}</small></div>)}</div>}
+            {c411Tried&&!busy&&releases.length===0&&<div className={`c411-fallback ${c411Err?"warn":""}`}>
+              <p>{c411Msg||"Aucune release trouvée sur C411 pour ce film."}</p>
+              {!c411Err&&!movie.owned&&(movie.wishlist
+                ?<p className="muted">La recherche automatique réessaiera plus tard.</p>
+                :<p className="muted">Ajoutez-le aux envies pour relancer la recherche plus tard.</p>)}
+            </div>}
+            {releases.length>0&&<>
+              <h3 className="release-heading">C411 <span className="count">{releases.length}</span></h3>
+              <div className="release-list">{releases.map(r=>{
                 const thisDl=dlState?.id===r.id?dlState:null;
                 const loading=thisDl?.status==="loading";
                 const added=thisDl?.status==="ok";
                 const failed=thisDl?.status==="error";
                 const otherBusy=dlState?.status==="loading"&&dlState.id!==r.id;
                 return <div className={`release ${r.accepted?"accepted":"rejected"}`} key={r.id}>
-                  <b>{r.title}</b>
-                  <small>{size(r.size_bytes)} · S:{r.seeders} · {r.resolution} · {r.codec} · score {r.score}</small>
-                  {!r.accepted&&<em>{r.rejection_reason}</em>}
-                  {added?<p className="dl-ok"><span className="check-ok" aria-hidden="true"/>Ajouté à Transmission</p>
-                  :loading?<button disabled className="btn-busy"><span className="spinner" aria-hidden="true"/>Ajout à Transmission…</button>
-                  :r.accepted?<button onClick={()=>dl(r.id)} disabled={otherBusy}>Télécharger</button>
-                  :r.tmdb_match!==false?<button className="ghost" onClick={()=>dl(r.id,true,r.rejection_reason)} disabled={otherBusy}>Forcer le téléchargement</button>
-                  :null}
-                  {failed&&<em>{thisDl?.msg||"Erreur"}</em>}
+                  <div className="release-info">
+                    <b>{r.title}</b>
+                    <small>{size(r.size_bytes)} · S:{r.seeders} · {r.resolution} · {r.codec} · score {r.score}</small>
+                    {!r.accepted&&<em>{r.rejection_reason}</em>}
+                    {failed&&<em>{thisDl?.msg||"Erreur"}</em>}
+                  </div>
+                  <div className="release-action">
+                    {added?<p className="dl-ok"><span className="check-ok" aria-hidden="true"/>Ajouté</p>
+                    :loading?<button disabled className="btn-busy"><span className="spinner" aria-hidden="true"/>Ajout…</button>
+                    :r.accepted?<button onClick={()=>dl(r.id)} disabled={otherBusy}>Télécharger</button>
+                    :r.tmdb_match!==false?<button className="ghost" onClick={()=>dl(r.id,true,r.rejection_reason)} disabled={otherBusy}>Forcer</button>
+                    :null}
+                  </div>
                 </div>;
-              })}
-            </div>
+              })}</div>
+            </>}
           </div>
         </section>
       </div>}

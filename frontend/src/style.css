@@ -806,10 +806,10 @@ button.ghost .spinner {
 }
 
 .movie-overview {
-  margin: 0 0 12px;
+  margin: 8px 0 12px;
   line-height: 1.45;
   display: -webkit-box;
-  -webkit-line-clamp: 5;
+  -webkit-line-clamp: 4;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
@@ -885,7 +885,7 @@ button.ghost .spinner {
 }
 
 .scrim {
-  position: absolute;
+  position: fixed;
   inset: 0;
   z-index: 30;
   background: rgba(28, 23, 16, .38);
@@ -898,12 +898,157 @@ button.ghost .spinner {
 
 .settings-scrim { z-index: 40; }
 
+.movie-scrim {
+  align-items: flex-end;
+  padding: 0 8px;
+}
+
 .sheet {
   width: min(920px, 100%);
   max-height: 100%;
   overflow-y: auto;
   margin: 0;
 }
+
+.movie-sheet {
+  width: min(920px, 100%);
+  max-height: min(88dvh, 100%);
+  border-radius: 20px 20px 0 0;
+  animation: sheet-up .32s cubic-bezier(.22, 1, .36, 1);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-bottom: 0;
+}
+
+.movie-head {
+  flex-shrink: 0;
+  padding-bottom: 10px;
+}
+
+.movie-head-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.movie-title-row { align-items: flex-start; }
+
+.movie-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: min(52dvh, 520px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  padding-bottom: max(16px, env(safe-area-inset-bottom));
+}
+.movie-body::-webkit-scrollbar { width: 6px; }
+.movie-body::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--gold) 55%, var(--line));
+  border-radius: 99px;
+}
+
+.sheet-handle {
+  width: 40px;
+  height: 4px;
+  border-radius: 99px;
+  background: color-mix(in srgb, var(--line) 80%, var(--muted));
+  margin: 0 auto 14px;
+}
+
+@keyframes sheet-up {
+  from { transform: translateY(110%); }
+  to { transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .movie-sheet { animation: none; }
+}
+
+.release-list,
+.file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 100%;
+}
+
+.release-heading {
+  margin: 0 0 8px;
+  font-size: .95rem;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--card);
+  padding: 2px 0 8px;
+}
+
+.release {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px 12px;
+  margin-top: 0;
+  padding: 10px 12px;
+}
+
+.release-info {
+  min-width: 0;
+  flex: 1;
+}
+
+.release-info b {
+  display: block;
+  font-size: .86rem;
+  font-weight: 650;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.release-info small {
+  margin-top: 4px;
+}
+
+.release-action {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  align-self: center;
+}
+
+.release-action button { margin-top: 0; }
+.release-action .dl-ok { margin: 0; }
+
+.release,
+.subcard {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.subcard {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.movie-head .plex-link { margin-bottom: 0; }
+
+a.plex-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  background: #e5a00d;
+  color: #1a1200;
+  -webkit-text-fill-color: #1a1200;
+  padding: 11px 16px;
+  font-weight: 700;
+  text-decoration: none;
+  margin-bottom: 8px;
+}
+a.plex-link:hover { filter: brightness(1.04); }
 
 .sheet-head {
   display: flex;
@@ -926,11 +1071,36 @@ button.ghost .spinner {
   body { overflow: auto; }
   .app { height: auto; min-height: 100dvh; overflow: visible; }
   .topbar {
-    display: flex;
-    flex-wrap: wrap;
-    padding: 12px 14px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "brand actions"
+      "search search";
+    align-items: center;
+    gap: 10px 8px;
+    padding: 10px 12px 12px;
   }
-  .brand .tagline { white-space: normal; }
+  .brand-home { grid-area: brand; min-width: 0; }
+  .topbar > .actions {
+    grid-area: actions;
+    flex-wrap: nowrap;
+  }
+  .topbar > .actions .ghost {
+    padding: 8px 10px;
+    font-size: .82rem;
+  }
+  .search {
+    grid-area: search;
+    width: 100%;
+    flex-direction: row;
+  }
+  .brand .tagline { display: none; }
+  .brand h1 {
+    font-size: 1.05rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
   h1 { font-size: 1.2rem; }
   .page { padding: 8px 10px 16px; overflow: visible; }
   .workspace {
@@ -942,9 +1112,122 @@ button.ghost .spinner {
   .board { min-height: 240px; }
   .h-scroll { min-height: 240px; }
   .tile { height: 240px; }
-  .board-results { min-height: 420px; }
-  .results-grid { grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); }
-  .search, .detail { flex-direction: column; }
+  .board-results { min-height: 0; }
+  .status-bar.mobile-hidden { display: none; }
+  .search-scrim {
+    z-index: 28;
+    align-items: flex-end;
+    padding: 0;
+  }
+  .search-sheet {
+    width: 100%;
+    max-height: min(78dvh, 100%);
+    border-radius: 20px 20px 0 0;
+    animation: sheet-up .32s cubic-bezier(.22, 1, .36, 1);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 0 max(16px, env(safe-area-inset-bottom));
+    overflow: hidden;
+    position: relative;
+    overscroll-behavior: contain;
+  }
+  .search-sheet:has(.results-rail)::after {
+    content: "";
+    position: absolute;
+    top: 64px;
+    right: 0;
+    bottom: 8px;
+    width: 28px;
+    pointer-events: none;
+    background: linear-gradient(90deg, transparent, var(--card));
+  }
+  .search-sheet .sheet-head {
+    padding: 0 16px;
+    margin-bottom: 2px;
+    flex-shrink: 0;
+  }
+  .search-sheet-msg {
+    margin: 0 16px;
+    flex-shrink: 0;
+  }
+  .search-sheet .empty-state {
+    margin: 0 16px 8px;
+    min-height: 88px;
+    flex: 0 0 auto;
+  }
+  .search-sheet .results-rail {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    align-items: stretch;
+    gap: 12px;
+    min-height: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 6px 24px 12px 16px;
+    scroll-snap-type: x mandatory;
+    scroll-padding-inline: 16px;
+    touch-action: pan-x;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+  }
+  .search-sheet .results-rail::-webkit-scrollbar { height: 5px; }
+  .search-sheet .results-rail::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--gold) 55%, var(--line));
+    border-radius: 99px;
+  }
+  .search-sheet .result-card {
+    flex: 0 0 auto;
+    width: min(44vw, 176px);
+    scroll-snap-align: start;
+    scroll-snap-stop: normal;
+  }
+  .search-sheet .result-meta b { font-size: .86rem; }
+  .detail { flex-direction: column; }
+  .movie-sheet .poster.lg {
+    width: 72px;
+    height: 108px;
+    border-radius: 8px;
+  }
+  .movie-head-row { gap: 12px; }
+  .movie-overview { -webkit-line-clamp: 3; }
+  .movie-head .actions {
+    gap: 6px;
+  }
+  .movie-head .actions button,
+  .movie-head .actions .plex-link {
+    padding: 8px 10px;
+    font-size: .8rem;
+  }
+  .release-action button {
+    padding: 7px 10px;
+    font-size: .78rem;
+  }
   .settings-grid { grid-template-columns: 1fr; }
-  .scrim { position: fixed; }
+  .scrim {
+    position: fixed;
+    align-items: flex-end;
+    padding: 0;
+  }
+  .sheet,
+  .movie-sheet {
+    width: 100%;
+    max-height: min(92dvh, 100%);
+    border-radius: 20px 20px 0 0;
+    animation: sheet-up .32s cubic-bezier(.22, 1, .36, 1);
+    padding-bottom: max(20px, env(safe-area-inset-bottom));
+  }
+  .sheet.search-sheet {
+    max-height: min(78dvh, 100%);
+    padding: 10px 0 max(16px, env(safe-area-inset-bottom));
+    overflow: hidden;
+  }
+  .movie-sheet {
+    padding: 10px 14px 0;
+    overflow: hidden;
+  }
+  .movie-body { max-height: min(48dvh, 420px); }
+  .movie-scrim { padding: 0; }
 }

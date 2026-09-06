@@ -12,6 +12,7 @@ from app.discovery import (
     fetch_discovery, process_discovery,
 )
 from app.library import scan, local_matches, db_search
+from app.plex import plex_open_url
 from app.services import tmdb_search, tmdb_get, c411_search, c411_candidate_titles, transmission, torrent_incomplete, TORRENT_STATUS, norm, release_matches_tmdb
 
 app=FastAPI(title=settings.app_name,version="0.1.0")
@@ -27,6 +28,8 @@ class GrabDownloadSettings(BaseModel):
     c411_categories: str
     c411_request_delay_seconds: float
     transmission_download_dir: str
+    plex_url: str
+    plex_token: str
 
 class GrabDownloadSettingsUpdate(BaseModel):
     quality_required_language: str | None = None
@@ -38,6 +41,8 @@ class GrabDownloadSettingsUpdate(BaseModel):
     c411_categories: str | None = None
     c411_request_delay_seconds: float | None = None
     transmission_download_dir: str | None = None
+    plex_url: str | None = None
+    plex_token: str | None = None
 
 class WishlistUpdate(BaseModel):
     auto_download: bool | None = None
@@ -88,6 +93,8 @@ def read_grab_download_settings():
         c411_categories=settings.c411_categories,
         c411_request_delay_seconds=settings.c411_request_delay_seconds,
         transmission_download_dir=settings.transmission_download_dir,
+        plex_url=settings.plex_url,
+        plex_token=settings.plex_token,
     )
 
 def ensure_movie(db,tmdb_id):
@@ -241,6 +248,7 @@ def movie(tmdb_id:int,db:Session=Depends(get_db)):
         "local_files":[{"path":x.path,"filename":x.filename,"size_bytes":x.size_bytes,
                         "resolution":x.resolution,"codec":x.codec,"language":x.language,"source":x.source}
                        for x in matches],
+        "plex_url":plex_open_url(m.tmdb_id, m.title, m.year, owned=bool(matches)),
         "wishlist":None if not wish else {"id":wish.id,"status":wish.status,"auto_download":wish.auto_download}
     }
 

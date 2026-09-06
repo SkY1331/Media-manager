@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     transmission_password: str = ""
     transmission_download_dir: str = "/downloads"
 
+    plex_url: str = ""
+    plex_token: str = ""
+
     auth_enable: bool = False
     auth_username: str = ""
     auth_password: str = ""
