@@ -64,6 +64,7 @@ type GrabDownloadSettings={
   transmission_download_dir:string;
   plex_url:string;
   plex_token:string;
+  show_force_title_mismatch:boolean;
 };
 
 type DiscoverySettings={
@@ -82,7 +83,8 @@ type DiscoverySettings={
 };
 
 const WISH_STATUS:{[k:string]:string}={WAITING:"En attente",PAUSED:"En pause",FOUND:"Trouvé",DOWNLOADING:"Téléchargement"};
-const DISC_CACHE_KEY="discovery-lists-v1";
+const DISC_CACHE_KEY="discovery-lists-v3";
+type DiscoveryLists={nouveautes:any[];attendus:any[];classiques:any[];nouveautes_source?:string};
 
 function readDiscCache(){
   try{
@@ -92,19 +94,27 @@ function readDiscCache(){
       nouveautes:d.nouveautes,
       attendus:d.attendus,
       classiques:Array.isArray(d.classiques)?d.classiques:[],
+      nouveautes_source:d.nouveautes_source==="tmdb"?"tmdb":"c411",
       savedAt:typeof d.savedAt==="number"?d.savedAt:null,
     };
   }catch{return null}
 }
-function writeDiscCache(data:{nouveautes:any[];attendus:any[];classiques:any[]}, savedAt=Date.now()){
+function writeDiscCache(data:DiscoveryLists, savedAt=Date.now()){
   try{
     localStorage.setItem(DISC_CACHE_KEY, JSON.stringify({
       nouveautes:data.nouveautes||[],
       attendus:data.attendus||[],
       classiques:data.classiques||[],
+      nouveautes_source:data.nouveautes_source==="tmdb"?"tmdb":"c411",
       savedAt,
     }));
   }catch{}
+}
+function fmtGrabs(n:number){
+  const v=Math.round(Number(n)||0);
+  if(v>=10000) return `${Math.round(v/1000)}k`;
+  if(v>=1000) return `${(v/1000).toFixed(1).replace(".",",")}k`;
+  return v.toLocaleString("fr-FR");
 }
 function fmtWhen(ts?:number|null){
   if(!ts) return "";
@@ -176,11 +186,13 @@ function App({onLogout,authRequired}:{onLogout:()=>void;authRequired:boolean}){
     c411_request_delay_seconds:4.2,
     transmission_download_dir:"",
     plex_url:"",
-    plex_token:""
+    plex_token:"",
+    show_force_title_mismatch:false
   });
-  const[discovery,setDiscovery]=useState<{nouveautes:any[];attendus:any[];classiques:any[]}>(()=>{
+  const[forceTitleMismatch,setForceTitleMismatch]=useState(false);
+  const[discovery,setDiscovery]=useState<DiscoveryLists>(()=>{
     const c=readDiscCache();
-    return c?{nouveautes:c.nouveautes,attendus:c.attendus,classiques:c.classiques}:{nouveautes:[],attendus:[],classiques:[]};
+    return c?{nouveautes:c.nouveautes,attendus:c.attendus,classiques:c.classiques,nouveautes_source:c.nouveautes_source}:{nouveautes:[],attendus:[],classiques:[],nouveautes_source:"c411"};
   });
   const[discSavedAt,setDiscSavedAt]=useState<number|null>(()=>readDiscCache()?.savedAt||null);
   const[discoveryBusy,setDiscoveryBusy]=useState(false);
@@ -207,10 +219,16 @@ function App({onLogout,authRequired}:{onLogout:()=>void;authRequired:boolean}){
     const r=await apiFetch(`/settings/grab-download`);
     if(!r.ok)return;
     const d=await r.json();
-    setSettings(s=>({...s,...d,plex_url:d.plex_url??"",plex_token:d.plex_token??""}));
+    setSettings(s=>({...s,...d,plex_url:d.plex_url??"",plex_token:d.plex_token??"",show_force_title_mismatch:!!d.show_force_title_mismatch}));
+    setForceTitleMismatch(!!d.show_force_title_mismatch);
   }
   function applyDiscovery(d:any){
-    const next={nouveautes:d.nouveautes||[],attendus:d.attendus||[],classiques:d.classiques||[]};
+    const next:DiscoveryLists={
+      nouveautes:d.nouveautes||[],
+      attendus:d.attendus||[],
+      classiques:d.classiques||[],
+      nouveautes_source:d.nouveautes_source==="tmdb"?"tmdb":"c411",
+    };
     const savedAt=Date.now();
     setDiscovery(next);
     setDiscSavedAt(savedAt);
@@ -221,7 +239,7 @@ function App({onLogout,authRequired}:{onLogout:()=>void;authRequired:boolean}){
     if(!force && readDiscCache()) return;
     setDiscoveryBusy(true);setDiscoveryMsg("");
     try{
-      const r=await apiFetch(`/discovery`);
+      const r=await apiFetch(`/discovery${force?"?refresh=1":""}`);
       const d=await r.json().catch(()=>({}));
       if(!r.ok)throw new Error(typeof d.detail==="string"?d.detail:"Impossible de charger les nouveautés");
       applyDiscovery(d);
@@ -391,7 +409,9 @@ function App({onLogout,authRequired}:{onLogout:()=>void;authRequired:boolean}){
       });
       const d=await r.json().catch(()=>({}));
       if(!r.ok)throw new Error(d.detail||"Impossible de sauvegarder");
-      setSettings(d.settings||settings);
+      const saved=d.settings||settings;
+      setSettings(saved);
+      setForceTitleMismatch(!!saved.show_force_title_mismatch);
       setSettingsMsg("Paramètres enregistrés.");
     }catch(e:any){
       setSettingsMsg(e?.message||"Erreur lors de l'enregistrement");
@@ -438,6 +458,7 @@ function App({onLogout,authRequired}:{onLogout:()=>void;authRequired:boolean}){
         nouveautes:prev.nouveautes.filter((x:any)=>x.tmdb_id!==tmdbId),
         attendus:prev.attendus.filter((x:any)=>x.tmdb_id!==tmdbId),
         classiques:(prev.classiques||[]).filter((x:any)=>x.tmdb_id!==tmdbId),
+        nouveautes_source:prev.nouveautes_source,
       };
       writeDiscCache(next, discSavedAt||Date.now());
       return next;
@@ -464,8 +485,10 @@ function App({onLogout,authRequired}:{onLogout:()=>void;authRequired:boolean}){
   }
 
   function discCard(x:any){
+    const grabs=Number(x.c411_grabs)||0;
     return <div className="card tile" key={x.tmdb_id} onClick={()=>open(x)} title={x.title}>
       <Poster path={x.poster_path} w={342} className="poster tile-poster"/>
+      {grabs>0&&<span className="tile-grabs" title={`${grabs.toLocaleString("fr-FR")} complétés sur C411`}>{fmtGrabs(grabs)}</span>}
       <button className="ghost tile-hide" onClick={e=>{e.stopPropagation();ignoreDisc(x.tmdb_id)}}>Masquer</button>
     </div>;
   }
@@ -570,15 +593,17 @@ function App({onLogout,authRequired}:{onLogout:()=>void;authRequired:boolean}){
             <button className="ghost" onClick={()=>loadDiscovery(true)} disabled={discoveryBusy}>{discoveryBusy?"Chargement…":"Actualiser"}</button>,
             <>
               {discoveryMsg&&<p className="empty-msg">{discoveryMsg}</p>}
-              {rail(discNouveautes,discoveryBusy?"Chargement TMDB…":"Aucun film récent bien noté hors stock, envies et téléchargements.",discNouveautes.map(discCard))}
+              {rail(discNouveautes,discoveryBusy?"Chargement des films les plus complétés sur C411…":(discovery.nouveautes_source==="tmdb"?"Aucun film récent bien noté hors stock, envies et téléchargements. C411 n'a pas répondu : repli sur la note TMDB.":"Aucun film récent très complété sur C411, hors stock, envies et téléchargements."),discNouveautes.map(discCard))}
             </>,
-            discSavedAt?`En mémoire · ${fmtWhen(discSavedAt)}`:undefined
+            discSavedAt
+              ?`${discovery.nouveautes_source==="tmdb"?"Note TMDB":"Popularité C411"} · ${fmtWhen(discSavedAt)}`
+              :"Popularité C411"
           )}
           {(!showResults||isMobile)&&board("board-attend","Attendus",discAttendus.length,null,
             rail(discAttendus,discoveryBusy?"Chargement…":"Aucune sortie à venir dans la fenêtre choisie.",discAttendus.map(discCard))
           )}
           {(!showResults||isMobile)&&board("board-class","Classiques",discClassiques.length,null,
-            rail(discClassiques,discoveryBusy?"Chargement…":"Aucun classique ultra bien noté hors stock, envies et téléchargements.",discClassiques.map(discCard))
+            rail(discClassiques,discoveryBusy?"Chargement…":"Aucun classique ultra bien noté absent de la bibliothèque Plex, des envies et des téléchargements.",discClassiques.map(discCard))
           )}
         </div>
         <div className="col-side">
@@ -652,13 +677,14 @@ function App({onLogout,authRequired}:{onLogout:()=>void;authRequired:boolean}){
             <label className="full">Dossier de téléchargement Transmission<input value={settings.transmission_download_dir} onChange={e=>setSettings({...settings,transmission_download_dir:e.target.value})}/></label>
             <label className="full">URL Plex<input value={settings.plex_url||""} onChange={e=>setSettings({...settings,plex_url:e.target.value})} placeholder="http://192.168.1.10:32400"/></label>
             <label className="full">Jeton Plex<input type="password" value={settings.plex_token||""} onChange={e=>setSettings({...settings,plex_token:e.target.value})} placeholder="X-Plex-Token" autoComplete="off"/></label>
+            <label className="check full"><input type="checkbox" checked={!!settings.show_force_title_mismatch} onChange={e=>setSettings({...settings,show_force_title_mismatch:e.target.checked})}/>Afficher le bouton de forcer le téléchargement malgré une différence de nom</label>
           </div>
           <div className="actions"><button onClick={saveSettings} disabled={savingSettings}>{savingSettings?"Enregistrement...":"Enregistrer"}</button>{settingsMsg&&<p className="muted">{settingsMsg}</p>}</div>
           <h2>Nouveautés, attendus et classiques</h2>
-          <p className="muted settings-hint">Films récents bien notés, sorties à venir, et classiques ultra bien notés, absents de la bibliothèque, des envies et des téléchargements. L'ajout auto n'est fait qu'une fois par film.</p>
+          <p className="muted settings-hint">Les nouveautés sont les films sortis dans la fenêtre, classés par le nombre de complétions sur C411 : ce qui se télécharge vraiment en France. La note et les votes TMDB servent de repli si C411 ne répond pas, et pour filtrer les attendus. Les classiques restent les films anciens très bien notés, absents de la bibliothèque Plex. Tout film déjà en stock, en envie ou en téléchargement est masqué. L'ajout auto n'est fait qu'une fois par film.</p>
           <div className="settings-grid">
             <label>Note minimale TMDB<input type="number" step="0.1" min="0" max="10" value={discSettings.min_rating} onChange={e=>setDiscSettings({...discSettings,min_rating:Number(e.target.value)})}/></label>
-            <label>Votes minimum (nouveautés)<input type="number" min="0" value={discSettings.min_votes} onChange={e=>setDiscSettings({...discSettings,min_votes:Number(e.target.value)})}/></label>
+            <label>Votes minimum<input type="number" min="0" value={discSettings.min_votes} onChange={e=>setDiscSettings({...discSettings,min_votes:Number(e.target.value)})}/></label>
             <label>Fenêtre nouveautés (jours)<input type="number" min="1" max="365" value={discSettings.released_days} onChange={e=>setDiscSettings({...discSettings,released_days:Number(e.target.value)})}/></label>
             <label>Fenêtre attendus (jours)<input type="number" min="1" max="365" value={discSettings.upcoming_days} onChange={e=>setDiscSettings({...discSettings,upcoming_days:Number(e.target.value)})}/></label>
             <label>Nombre max par liste<input type="number" min="1" max="50" value={discSettings.max_results} onChange={e=>setDiscSettings({...discSettings,max_results:Number(e.target.value)})}/></label>
@@ -690,6 +716,7 @@ function App({onLogout,authRequired}:{onLogout:()=>void;authRequired:boolean}){
                 </div>
                 <p className="status-line">
                   {movie.vote_average?<span className="badge auto">★ {movie.vote_average}{movie.vote_count?` · ${movie.vote_count} votes`:""}</span>:null}
+                  {movie.c411_grabs?<span className="badge auto">{Number(movie.c411_grabs).toLocaleString("fr-FR")} complétés</span>:null}
                   {movie.popularity?<span className="badge missing">Popularité {Math.round(Number(movie.popularity))}</span>:null}
                   {movie.owned?<span className="badge ok">Présent dans la bibliothèque</span>
                   :movie.wishlist?<><span className={`badge ${statusKind(movie.wishlist.status)}`}>{WISH_STATUS[movie.wishlist.status]||movie.wishlist.status}</span>{movie.wishlist.auto_download&&<span className="badge auto">Auto</span>}</>
@@ -744,7 +771,7 @@ function App({onLogout,authRequired}:{onLogout:()=>void;authRequired:boolean}){
                     {added?<p className="dl-ok"><span className="check-ok" aria-hidden="true"/>Ajouté</p>
                     :loading?<button disabled className="btn-busy"><span className="spinner" aria-hidden="true"/>Ajout…</button>
                     :r.accepted?<button onClick={()=>dl(r.id)} disabled={otherBusy}>Télécharger</button>
-                    :r.tmdb_match!==false?<button className="ghost" onClick={()=>dl(r.id,true,r.rejection_reason)} disabled={otherBusy}>Forcer</button>
+                    :(r.tmdb_match!==false||forceTitleMismatch)?<button className="ghost" onClick={()=>dl(r.id,true,r.rejection_reason)} disabled={otherBusy}>Forcer</button>
                     :null}
                   </div>
                 </div>;

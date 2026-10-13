@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     quality_max_size_gb: float = 5.0
     quality_allowed_sources: str = "WEB-DL,WEBRip,BluRay,WEB"
     quality_min_seeders: int = 2
+    show_force_title_mismatch: bool = False
 
     transmission_url: str = "http://host.docker.internal:9091/transmission/rpc"
     transmission_user: str = ""

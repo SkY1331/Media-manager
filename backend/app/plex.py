@@ -1,9 +1,16 @@
+import re
+import time
 import xml.etree.ElementTree as ET
 from urllib.parse import quote
 import requests
 from app.config import settings
+from app.library import normalize
 
 _machine_id = None
+_library_cache = {"key": None, "at": 0.0, "data": None, "ttl": 0.0}
+_TMDB_GUID = re.compile(r"(?:tmdb|themoviedb)://(\d+)", re.I)
+_LIBRARY_TTL = 15 * 60
+_LIBRARY_ERROR_TTL = 60
 
 def plex_configured():
     return bool((settings.plex_url or "").strip() and (settings.plex_token or "").strip())
@@ -79,6 +86,119 @@ def find_rating_key(tmdb_id, title=None, year=None):
     except Exception as e:
         print("[plex]", e)
     return None
+
+def _guid_values(el):
+    out = []
+    raw = el.attrib.get("guid")
+    if raw:
+        out.append(raw)
+    for child in el.findall("Guid"):
+        gid = child.attrib.get("id")
+        if gid:
+            out.append(gid)
+    return out
+
+def _remember_title(titles, el):
+    year_raw = el.attrib.get("year") or ""
+    year = int(year_raw) if year_raw.isdigit() else None
+    for attr in ("title", "originalTitle", "titleSort"):
+        name = normalize(el.attrib.get(attr))
+        if name:
+            titles.add((name, year))
+
+def _collect_movies(root, tmdb_ids, titles, seen_keys):
+    added = 0
+    for el in root.iter("Video"):
+        if el.attrib.get("type") and el.attrib.get("type") != "movie":
+            continue
+        rating_key = el.attrib.get("ratingKey")
+        if rating_key:
+            if rating_key in seen_keys:
+                continue
+            seen_keys.add(rating_key)
+        added += 1
+        for guid in _guid_values(el):
+            match = _TMDB_GUID.search(guid)
+            if match:
+                tmdb_ids.add(int(match.group(1)))
+        _remember_title(titles, el)
+    return added
+
+def _fetch_plex_movie_index():
+    tmdb_ids, titles, seen_keys = set(), set(), set()
+    r = requests.get(f"{_base()}/library/sections", headers=_headers(), timeout=8)
+    r.raise_for_status()
+    root = ET.fromstring(r.content)
+    sections = [
+        el.attrib.get("key")
+        for el in root.findall("Directory")
+        if el.attrib.get("type") == "movie" and el.attrib.get("key")
+    ]
+    for key in sections:
+        start = 0
+        page = 200
+        while start < 20000:
+            r = requests.get(
+                f"{_base()}/library/sections/{key}/all",
+                params={"includeGuids": 1},
+                headers={
+                    **_headers(),
+                    "X-Plex-Container-Start": str(start),
+                    "X-Plex-Container-Size": str(page),
+                },
+                timeout=30,
+            )
+            if not r.ok:
+                break
+            media = ET.fromstring(r.content)
+            added = _collect_movies(media, tmdb_ids, titles, seen_keys)
+            got = int(media.attrib.get("size") or 0)
+            total = int(media.attrib.get("totalSize") or 0)
+            if added <= 0 or got <= 0:
+                break
+            start += got
+            if total and start >= total:
+                break
+            if not total and got < page:
+                break
+    return {"tmdb": tmdb_ids, "titles": titles}
+
+def plex_movie_index():
+    """Identifiants TMDB et titres déjà présents dans les bibliothèques films Plex."""
+    empty = {"tmdb": set(), "titles": set()}
+    if not plex_configured():
+        return empty
+    key = (_base(), settings.plex_token)
+    now = time.monotonic()
+    if _library_cache["key"] == key and _library_cache["data"] is not None and now - _library_cache["at"] < _library_cache["ttl"]:
+        return _library_cache["data"]
+    try:
+        data = _fetch_plex_movie_index()
+        ttl = _LIBRARY_TTL
+    except Exception as e:
+        print("[plex library]", e)
+        data = empty
+        ttl = _LIBRARY_ERROR_TTL
+    _library_cache.update(key=key, at=now, data=data, ttl=ttl)
+    return data
+
+def plex_has_movie(index, tmdb_id=None, titles=(), year=None):
+    if not index:
+        return False
+    if tmdb_id and int(tmdb_id) in index.get("tmdb", ()):
+        return True
+    try:
+        year = int(year) if year else None
+    except (TypeError, ValueError):
+        year = None
+    known = index.get("titles") or set()
+    for title in titles:
+        name = normalize(title)
+        if not name:
+            continue
+        if (name, year) in known or (name, None) in known:
+            return True
+    return False
 
 def plex_open_url(tmdb_id, title=None, year=None, owned=False):
     if not owned:

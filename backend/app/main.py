@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.auth import auth_enabled, install_auth
 from app.config import settings
-from app.db import get_db, SessionLocal, Movie, Wishlist, Release, Download, DiscoveryIgnore
+from app.db import get_db, SessionLocal, Movie, Wishlist, Release, Download, DiscoveryIgnore, AppSetting
 from app.discovery import (
     load_discovery_settings, save_discovery_settings, validate_discovery_updates,
     fetch_discovery, process_discovery,
@@ -30,6 +30,7 @@ class GrabDownloadSettings(BaseModel):
     transmission_download_dir: str
     plex_url: str
     plex_token: str
+    show_force_title_mismatch: bool
 
 class GrabDownloadSettingsUpdate(BaseModel):
     quality_required_language: str | None = None
@@ -43,6 +44,7 @@ class GrabDownloadSettingsUpdate(BaseModel):
     transmission_download_dir: str | None = None
     plex_url: str | None = None
     plex_token: str | None = None
+    show_force_title_mismatch: bool | None = None
 
 class WishlistUpdate(BaseModel):
     auto_download: bool | None = None
@@ -82,6 +84,26 @@ def clear_wishlist_for_movie(db, movie_id):
     db.delete(w)
     return True
 
+_FORCE_TITLE_KEY = "show_force_title_mismatch"
+
+def _parse_bool(value):
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+def apply_show_force_title_mismatch(db):
+    row = db.get(AppSetting, _FORCE_TITLE_KEY)
+    if row is not None:
+        settings.show_force_title_mismatch = _parse_bool(row.value)
+
+def persist_show_force_title_mismatch(db, value: bool):
+    settings.show_force_title_mismatch = bool(value)
+    row = db.get(AppSetting, _FORCE_TITLE_KEY)
+    payload = "true" if value else "false"
+    if row is None:
+        db.add(AppSetting(key=_FORCE_TITLE_KEY, value=payload))
+    else:
+        row.value = payload
+    db.commit()
+
 def read_grab_download_settings():
     return GrabDownloadSettings(
         quality_required_language=settings.quality_required_language,
@@ -95,6 +117,7 @@ def read_grab_download_settings():
         transmission_download_dir=settings.transmission_download_dir,
         plex_url=settings.plex_url,
         plex_token=settings.plex_token,
+        show_force_title_mismatch=bool(settings.show_force_title_mismatch),
     )
 
 def ensure_movie(db,tmdb_id):
@@ -112,11 +135,12 @@ def health(): return {"ok":True}
 def scan_library(db:Session=Depends(get_db)): return scan(db)
 
 @app.get("/api/settings/grab-download")
-def get_grab_download_settings():
+def get_grab_download_settings(db:Session=Depends(get_db)):
+    apply_show_force_title_mismatch(db)
     return read_grab_download_settings().model_dump()
 
 @app.put("/api/settings/grab-download")
-def update_grab_download_settings(payload: GrabDownloadSettingsUpdate):
+def update_grab_download_settings(payload: GrabDownloadSettingsUpdate, db:Session=Depends(get_db)):
     updates=payload.model_dump(exclude_none=True)
     if "quality_max_size_gb" in updates and updates["quality_max_size_gb"] <= 0:
         raise HTTPException(400,"quality_max_size_gb doit être > 0")
@@ -125,8 +149,11 @@ def update_grab_download_settings(payload: GrabDownloadSettingsUpdate):
     if "c411_request_delay_seconds" in updates and updates["c411_request_delay_seconds"] < 0:
         raise HTTPException(400,"c411_request_delay_seconds doit être >= 0")
 
+    force_title = updates.pop("show_force_title_mismatch", None)
     for key, value in updates.items():
         setattr(settings, key, value)
+    if force_title is not None:
+        persist_show_force_title_mismatch(db, force_title)
     return {"ok":True,"settings":read_grab_download_settings().model_dump()}
 
 @app.get("/api/search")
@@ -282,7 +309,7 @@ def download(release_id:int,force:bool=False,db:Session=Depends(get_db)):
     hit=next((x for x in fresh if x["infohash"].lower()==(r.infohash or "").lower()),None)
     if not hit or not hit["download_url"]:
         raise HTTPException(409,"Release plus disponible")
-    if not hit.get("tmdb_match", True):
+    if not hit.get("tmdb_match", True) and not (force and settings.show_force_title_mismatch):
         reason=hit.get("rejection_reason") or "titre différent de TMDB"
         raise HTTPException(409,f"Release non conforme: {reason}")
     if not force and not hit["accepted"]:
@@ -297,9 +324,9 @@ def download(release_id:int,force:bool=False,db:Session=Depends(get_db)):
     return {"ok":True,"transmission":info}
 
 @app.get("/api/discovery")
-def discovery(db:Session=Depends(get_db)):
+def discovery(refresh:bool=False, db:Session=Depends(get_db)):
     try:
-        return fetch_discovery(db)
+        return fetch_discovery(db, refresh=refresh)
     except RuntimeError as e:
         raise HTTPException(400, str(e))
     except Exception as e:
@@ -501,5 +528,10 @@ async def startup():
         print("[auth] protection par mot de passe active")
     if settings.session_secret in ("", "change-me-session-secret"):
         print("[auth] ATTENTION: définissez un SESSION_SECRET unique dans .env")
+    db=SessionLocal()
+    try:
+        apply_show_force_title_mismatch(db)
+    finally:
+        db.close()
     asyncio.create_task(wishlist_loop())
     asyncio.create_task(discovery_loop())
