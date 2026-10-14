@@ -54,6 +54,7 @@ class DiscoverySettingsUpdate(BaseModel):
     min_rating: float | None = None
     min_votes: int | None = None
     released_days: int | None = None
+    popularity_days: int | None = None
     upcoming_days: int | None = None
     max_results: int | None = None
     auto_add_nouveautes: bool | None = None

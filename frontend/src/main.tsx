@@ -71,6 +71,7 @@ type DiscoverySettings={
   min_rating:number;
   min_votes:number;
   released_days:number;
+  popularity_days:number;
   upcoming_days:number;
   max_results:number;
   auto_add_nouveautes:boolean;
@@ -109,6 +110,10 @@ function writeDiscCache(data:DiscoveryLists, savedAt=Date.now()){
       savedAt,
     }));
   }catch{}
+}
+const POP_PERIODS:[number,string][]=[[1,"24 h"],[7,"7 j"],[30,"30 j"]];
+function popPeriodLabel(days?:number){
+  return POP_PERIODS.find(([d])=>d===Number(days))?.[1]||"7 j";
 }
 function fmtGrabs(n:number){
   const v=Math.round(Number(n)||0);
@@ -198,7 +203,7 @@ function App({onLogout,authRequired}:{onLogout:()=>void;authRequired:boolean}){
   const[discoveryBusy,setDiscoveryBusy]=useState(false);
   const[discoveryMsg,setDiscoveryMsg]=useState("");
   const[discSettings,setDiscSettings]=useState<DiscoverySettings>({
-    min_rating:7,min_votes:40,released_days:60,upcoming_days:90,max_results:20,
+    min_rating:7,min_votes:40,released_days:60,popularity_days:7,upcoming_days:90,max_results:20,
     auto_add_nouveautes:false,auto_add_attendus:false,auto_add_classiques:false,auto_download:false,
     classic_min_rating:8,classic_min_votes:1500,classic_min_age_years:10
   });
@@ -425,6 +430,7 @@ function App({onLogout,authRequired}:{onLogout:()=>void;authRequired:boolean}){
         min_rating:Number(discSettings.min_rating),
         min_votes:Number(discSettings.min_votes),
         released_days:Number(discSettings.released_days),
+        popularity_days:Number(discSettings.popularity_days),
         upcoming_days:Number(discSettings.upcoming_days),
         max_results:Number(discSettings.max_results),
         classic_min_rating:Number(discSettings.classic_min_rating),
@@ -445,6 +451,24 @@ function App({onLogout,authRequired}:{onLogout:()=>void;authRequired:boolean}){
     }catch(e:any){
       setDiscSettingsMsg(e?.message||"Erreur lors de l'enregistrement");
     }finally{setSavingDisc(false)}
+  }
+  async function setPopularityPeriod(days:number){
+    if(Number(discSettings.popularity_days)===days||discoveryBusy||savingDisc) return;
+    const prev=discSettings.popularity_days;
+    setDiscoveryMsg("");
+    setDiscoveryBusy(true);
+    setDiscSettings(s=>({...s,popularity_days:days}));
+    try{
+      const r=await apiFetch(`/settings/discovery`,{method:"PUT",body:JSON.stringify({popularity_days:days})});
+      const d=await r.json().catch(()=>({}));
+      if(!r.ok)throw new Error(typeof d.detail==="string"?d.detail:"Impossible de changer la période");
+      if(d.settings)setDiscSettings(d.settings);
+      await loadDiscovery(true);
+    }catch(e:any){
+      setDiscSettings(s=>({...s,popularity_days:prev}));
+      setDiscoveryBusy(false);
+      setDiscoveryMsg(e?.message||"Impossible de changer la période");
+    }
   }
   async function ignoreDisc(tmdbId:number){
     const r=await apiFetch(`/discovery/${tmdbId}/ignore`,{method:"POST"});
@@ -590,14 +614,19 @@ function App({onLogout,authRequired}:{onLogout:()=>void;authRequired:boolean}){
             q.trim()?`pour « ${q.trim()} »`:undefined
           )}
           {(!showResults||isMobile)&&board("board-nouv","Nouveautés",discNouveautes.length,
-            <button className="ghost" onClick={()=>loadDiscovery(true)} disabled={discoveryBusy}>{discoveryBusy?"Chargement…":"Actualiser"}</button>,
+            <div className="board-tools">
+              <div className="period-switch" role="group" aria-label="Période de popularité">
+                {POP_PERIODS.map(([days,label])=><button key={days} className={`ghost ${Number(discSettings.popularity_days)===days?"on":""}`} onClick={()=>setPopularityPeriod(days)} disabled={discoveryBusy||savingDisc}>{label}</button>)}
+              </div>
+              <button className="ghost" onClick={()=>loadDiscovery(true)} disabled={discoveryBusy}>{discoveryBusy?"Chargement…":"Actualiser"}</button>
+            </div>,
             <>
               {discoveryMsg&&<p className="empty-msg">{discoveryMsg}</p>}
-              {rail(discNouveautes,discoveryBusy?"Chargement des films les plus complétés sur C411…":(discovery.nouveautes_source==="tmdb"?"Aucun film récent bien noté hors stock, envies et téléchargements. C411 n'a pas répondu : repli sur la note TMDB.":"Aucun film récent très complété sur C411, hors stock, envies et téléchargements."),discNouveautes.map(discCard))}
+              {rail(discNouveautes,discoveryBusy?"Chargement des films les plus complétés sur C411…":(discovery.nouveautes_source==="tmdb"?"Aucun film récent bien noté hors stock, envies et téléchargements. C411 n'a pas répondu : repli sur la note TMDB.":`Aucun film très complété sur C411 sur ${popPeriodLabel(discSettings.popularity_days)}, hors stock, envies et téléchargements.`),discNouveautes.map(discCard))}
             </>,
             discSavedAt
-              ?`${discovery.nouveautes_source==="tmdb"?"Note TMDB":"Popularité C411"} · ${fmtWhen(discSavedAt)}`
-              :"Popularité C411"
+              ?`${discovery.nouveautes_source==="tmdb"?"Note TMDB":`Popularité C411 · ${popPeriodLabel(discSettings.popularity_days)}`} · ${fmtWhen(discSavedAt)}`
+              :`Popularité C411 · ${popPeriodLabel(discSettings.popularity_days)}`
           )}
           {(!showResults||isMobile)&&board("board-attend","Attendus",discAttendus.length,null,
             rail(discAttendus,discoveryBusy?"Chargement…":"Aucune sortie à venir dans la fenêtre choisie.",discAttendus.map(discCard))
@@ -681,8 +710,13 @@ function App({onLogout,authRequired}:{onLogout:()=>void;authRequired:boolean}){
           </div>
           <div className="actions"><button onClick={saveSettings} disabled={savingSettings}>{savingSettings?"Enregistrement...":"Enregistrer"}</button>{settingsMsg&&<p className="muted">{settingsMsg}</p>}</div>
           <h2>Nouveautés, attendus et classiques</h2>
-          <p className="muted settings-hint">Les nouveautés sont les films sortis dans la fenêtre, classés par le nombre de complétions sur C411 : ce qui se télécharge vraiment en France. La note et les votes TMDB servent de repli si C411 ne répond pas, et pour filtrer les attendus. Les classiques restent les films anciens très bien notés, absents de la bibliothèque Plex. Tout film déjà en stock, en envie ou en téléchargement est masqué. L'ajout auto n'est fait qu'une fois par film.</p>
+          <p className="muted settings-hint">Les nouveautés reprennent le top Film de C411 sur la période choisie (24 h, 7 j ou 30 j) : les torrents publiés dans ce laps de temps, classés par nombre de complétions. La note et les votes servent de repli si C411 ne répond pas, et pour filtrer les attendus. Les classiques restent les films anciens très bien notés, absents de la bibliothèque Plex. Tout film déjà en stock, en envie ou en téléchargement est masqué. L'ajout auto n'est fait qu'une fois par film.</p>
           <div className="settings-grid">
+            <label>Période de popularité
+              <select value={discSettings.popularity_days} onChange={e=>setDiscSettings({...discSettings,popularity_days:Number(e.target.value)})}>
+                {POP_PERIODS.map(([days,label])=><option key={days} value={days}>{label}</option>)}
+              </select>
+            </label>
             <label>Note minimale TMDB<input type="number" step="0.1" min="0" max="10" value={discSettings.min_rating} onChange={e=>setDiscSettings({...discSettings,min_rating:Number(e.target.value)})}/></label>
             <label>Votes minimum<input type="number" min="0" value={discSettings.min_votes} onChange={e=>setDiscSettings({...discSettings,min_votes:Number(e.target.value)})}/></label>
             <label>Fenêtre nouveautés (jours)<input type="number" min="1" max="365" value={discSettings.released_days} onChange={e=>setDiscSettings({...discSettings,released_days:Number(e.target.value)})}/></label>

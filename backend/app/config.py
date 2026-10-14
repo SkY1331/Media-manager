@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     discovery_min_rating: float = 7.0
     discovery_min_votes: int = 40
     discovery_released_days: int = 60
+    discovery_popularity_days: int = 7
     discovery_upcoming_days: int = 90
     discovery_max_results: int = 20
     discovery_auto_add_nouveautes: bool = False

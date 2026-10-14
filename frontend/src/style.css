@@ -204,6 +204,7 @@ p { margin: 6px 0; }
 
 .search input,
 .settings-grid input:not([type="checkbox"]),
+.settings-grid select,
 .wish-edit select,
 .login-card input {
   background: #fff;
@@ -232,6 +233,7 @@ p { margin: 6px 0; }
 
 .search input:focus,
 .settings-grid input:not([type="checkbox"]):focus,
+.settings-grid select:focus,
 .wish-edit select:focus,
 .login-card input:focus {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--gold) 28%, transparent);
@@ -622,7 +624,26 @@ button.ghost .spinner {
   justify-content: space-between;
   gap: 6px;
   flex-shrink: 0;
+  flex-wrap: wrap;
   min-height: 0;
+}
+
+.board-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.period-switch {
+  display: flex;
+  gap: 2px;
+}
+
+.board-head .period-switch .ghost.on {
+  background: var(--gold-soft);
+  border-color: color-mix(in srgb, var(--gold) 55%, var(--line));
+  color: #7a4b00;
 }
 
 .board-title {

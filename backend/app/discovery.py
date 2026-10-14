@@ -1,7 +1,7 @@
 import json
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from app.config import settings
 from app.db import AppSetting, DiscoveryIgnore, DiscoveryAutoAdded, Movie, Wishlist, Download
 from app.library import local_matches
@@ -13,13 +13,15 @@ from app.services import (
 SETTING_KEY = "discovery"
 
 BOOL_KEYS = ("auto_add_nouveautes", "auto_add_attendus", "auto_add_classiques", "auto_download")
-INT_KEYS = ("min_votes", "released_days", "upcoming_days", "max_results", "classic_min_votes", "classic_min_age_years")
+INT_KEYS = ("min_votes", "released_days", "upcoming_days", "max_results", "classic_min_votes", "classic_min_age_years", "popularity_days")
+POPULARITY_PERIODS = (1, 7, 30)
 
 def default_discovery_settings():
     return {
         "min_rating": float(settings.discovery_min_rating),
         "min_votes": int(settings.discovery_min_votes),
         "released_days": int(settings.discovery_released_days),
+        "popularity_days": int(settings.discovery_popularity_days),
         "upcoming_days": int(settings.discovery_upcoming_days),
         "max_results": int(settings.discovery_max_results),
         "auto_add_nouveautes": bool(settings.discovery_auto_add_nouveautes),
@@ -51,6 +53,7 @@ def load_discovery_settings(db):
             cfg[key] = int(data[key])
         else:
             cfg[key] = float(data[key])
+    cfg["popularity_days"] = normalize_popularity_days(cfg.get("popularity_days"))
     return cfg
 
 def save_discovery_settings(db, updates):
@@ -64,6 +67,24 @@ def save_discovery_settings(db, updates):
         row.value = payload
     db.commit()
     return cfg
+
+def normalize_popularity_days(value):
+    try:
+        v = int(value)
+    except (TypeError, ValueError):
+        return 7
+    if v in POPULARITY_PERIODS:
+        return v
+    return min(POPULARITY_PERIODS, key=lambda p: abs(p - v))
+
+def popularity_page_cap(days):
+    """Assez de pages pour couvrir la période : le top n'est pas dans les derniers envois."""
+    days = int(days)
+    if days <= 1:
+        return 8
+    if days <= 7:
+        return 25
+    return 40
 
 def validate_discovery_updates(updates):
     if "min_rating" in updates:
@@ -97,6 +118,11 @@ def validate_discovery_updates(updates):
             if v < 1 or v > 365:
                 raise ValueError(f"{key} doit être entre 1 et 365")
             updates[key] = v
+    if "popularity_days" in updates:
+        v = normalize_popularity_days(updates["popularity_days"])
+        if int(updates["popularity_days"]) not in POPULARITY_PERIODS:
+            raise ValueError("popularity_days doit être 1 (24 h), 7 ou 30")
+        updates["popularity_days"] = v
     if "max_results" in updates:
         v = int(updates["max_results"])
         if v < 1 or v > 50:
@@ -168,24 +194,20 @@ def _tmdb_rated_nouveautes(cfg, today, limit):
         max_results=max(limit * 2, 20),
     )
 
-def _recent_by_completions(ranked, released_days, wanted):
-    """Garde les films sortis dans la fenêtre, du plus complété au moins complété."""
-    today = date.today()
-    start = (today - timedelta(days=int(released_days))).isoformat()
-    end = today.isoformat()
-    start_year = int(start[:4])
+def _recent_by_completions(ranked, wanted):
+    """Résout les films déjà classés par complétions C411, sans filtre de date de sortie."""
     candidates = []
     searches = 0
     seen = set()
     for row in ranked:
-        if len(candidates) >= 100:
+        if len(candidates) >= max(wanted, 40):
             break
-        year = row.get("year")
-        if year and (year < start_year or year > today.year + 1):
+        if int(row.get("grabs") or 0) <= 0:
             continue
+        year = row.get("year")
         tid = row.get("tmdb_id")
         if not tid:
-            if searches >= 8:
+            if searches >= 30:
                 continue
             searches += 1
             try:
@@ -215,9 +237,6 @@ def _recent_by_completions(ranked, released_days, wanted):
     for row, meta in loaded:
         if not meta:
             continue
-        rd = meta.get("release_date") or ""
-        if len(rd) < 10 or rd < start or rd > end:
-            continue
         out.append({
             **meta,
             "c411_grabs": int(row.get("grabs") or 0),
@@ -228,7 +247,7 @@ def _recent_by_completions(ranked, released_days, wanted):
 
 def load_popular_nouveautes(cfg, today, limit, refresh=False):
     """Films récents classés par complétions C411. Repli sur la note TMDB si C411 ne répond pas."""
-    sig = (int(cfg["released_days"]), int(cfg["max_results"]))
+    sig = (int(cfg["max_results"]), int(cfg["popularity_days"]))
     now = time.monotonic()
     cached = _popularity_cache["items"]
     age = now - _popularity_cache["at"]
@@ -237,11 +256,22 @@ def load_popular_nouveautes(cfg, today, limit, refresh=False):
         return cached, _popularity_cache["source"]
     source = "c411"
     try:
-        raw = c411_browse_movies(pages=5, page_size=100)
+        since = datetime.now(timezone.utc) - timedelta(days=int(cfg["popularity_days"]))
+        raw = c411_browse_movies(
+            pages=popularity_page_cap(cfg["popularity_days"]),
+            page_size=100,
+            since=since,
+            categories="2030",
+        )
         ranked = aggregate_c411_completions(raw)
-        if not ranked or sum(x["grabs"] for x in ranked) <= 0:
+        if not ranked or max(x["grabs"] for x in ranked) <= 0:
             raise RuntimeError("C411 n'a renvoyé aucune complétion")
-        items = _recent_by_completions(ranked, cfg["released_days"], max(limit * 3, 24))
+        print(
+            "[discovery popularité]",
+            len(raw), "torrents Film,",
+            ranked[0].get("title"), ranked[0].get("grabs"), "complétions",
+        )
+        items = _recent_by_completions(ranked, max(limit * 2, 20))
     except Exception as e:
         print("[discovery popularité]", e)
         items = _tmdb_rated_nouveautes(cfg, today, limit)

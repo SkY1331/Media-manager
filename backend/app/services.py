@@ -1,4 +1,6 @@
 import base64, re, time, unicodedata, urllib.parse, xml.etree.ElementTree as ET
+from datetime import timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 import requests
 from app.config import settings
@@ -161,6 +163,19 @@ def c411_query(params):
         raise RuntimeError(root.attrib.get("description") or "erreur C411")
     return root
 
+def _parse_pubdate(value):
+    if not value:
+        return None
+    try:
+        dt = parsedate_to_datetime(str(value).strip())
+    except (TypeError, ValueError, OverflowError, IndexError):
+        return None
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
 def _parse_c411_item(item):
     name = (item.findtext("title") or "").strip()
     size = int(item.findtext("size") or 0)
@@ -187,6 +202,7 @@ def _parse_c411_item(item):
         "infohash": _attr(item, "infohash"),
         "tmdb_id": tmdb_id,
         "categories": categories,
+        "published": _parse_pubdate(item.findtext("pubDate")),
         "download_url": enc.attrib.get("url", "") if enc is not None else "",
     }
 
@@ -284,8 +300,9 @@ def release_matches_tmdb(release_name, title, original_title=None, year=None):
             return True, ""
     return False, "Titre différent de la fiche TMDB"
 
-# Films, étrangers, animation, documentaires. Hors collections, clips, spectacles et concerts.
-C411_FILM_CATS = {2000, 2030, 2060, 2070}
+# Sous-catégorie « Film » de Films & Vidéos (caps C411). Pas les séries, l'animation ni les concerts.
+C411_MOVIE_CAT = "2030"
+C411_FILM_CATS = {2030}
 _SERIES_RE = re.compile(r"(?i)\bS\d{1,3}(?:E\d{1,3})?\b|\b(?:saison|season)\s*\d")
 
 def c411_search(title, year=None, original_title=None, verify_tmdb=False):
@@ -312,15 +329,16 @@ def c411_search(title, year=None, original_title=None, verify_tmdb=False):
     out.sort(key=lambda x:(x["accepted"],x["score"],x["seeders"]),reverse=True)
     return out
 
-def c411_browse_movies(pages=5, page_size=100):
-    """Derniers torrents films. Chaque page respecte le délai C411."""
+def c411_browse_movies(pages=5, page_size=100, since=None, categories=None):
+    """Torrents de la catégorie, du plus récent au plus ancien. S'arrête avant `since`."""
     seen=set()
     out=[]
+    cat=categories or C411_MOVIE_CAT
     for page in range(max(1, int(pages))):
         try:
             root=c411_query({
                 "t":"search",
-                "cat":",".join(str(c) for c in sorted(C411_FILM_CATS)),
+                "cat":cat,
                 "limit":page_size,
                 "offset":page * page_size,
                 "extended":1,
@@ -329,21 +347,31 @@ def c411_browse_movies(pages=5, page_size=100):
             if page==0:
                 raise
             break
-        added=0
+        page_rows=[]
         for item in root.findall("./channel/item"):
-            row=_parse_c411_item(item)
+            page_rows.append(_parse_c411_item(item))
+        if not page_rows:
+            break
+        dates=[r["published"] for r in page_rows if r.get("published")]
+        if since and dates:
+            page_rows=[r for r in page_rows if r.get("published") and r["published"]>=since]
+            exhausted=max(dates)<since
+        else:
+            exhausted=False
+        added=0
+        for row in page_rows:
             key=(row.get("infohash") or "").lower() or row["title"]
             if not key or key in seen:
                 continue
             seen.add(key)
             out.append(row)
             added+=1
-        if added==0:
+        if exhausted or added==0:
             break
     return out
 
 def aggregate_c411_completions(items):
-    """Regroupe les releases d'un même film et additionne les complétions (grabs)."""
+    """Regroupe les releases d'un film. Le score est le plus gros nombre de complétions, comme la colonne Compl. de C411."""
     groups={}
     for it in items:
         cats=it.get("categories") or []
@@ -361,7 +389,7 @@ def aggregate_c411_completions(items):
         if not g:
             g={"tmdb_id":tid,"title":parsed,"year":year,"grabs":0,"releases":0}
             groups[key]=g
-        g["grabs"]+=int(it.get("grabs") or 0)
+        g["grabs"]=max(g["grabs"], int(it.get("grabs") or 0))
         g["releases"]+=1
         if tid:
             g["tmdb_id"]=tid
@@ -378,7 +406,7 @@ def aggregate_c411_completions(items):
         if host is None and g.get("year"):
             host=by_title.get((norm(g["title"]), g["year"]+1)) or by_title.get((norm(g["title"]), g["year"]-1))
         if host and host is not g:
-            host["grabs"]+=g["grabs"]
+            host["grabs"]=max(host["grabs"], g["grabs"])
             host["releases"]+=g["releases"]
             drop.append(key)
     for key in drop:
